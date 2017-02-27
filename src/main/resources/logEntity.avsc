@@ -1,0 +1,9 @@
+{"namespace": "",
+ "type": "record",
+ "name": "LogEntity",
+ "fields": [
+     {"name": "uri", "type": "string"},
+     {"name": "host", "type": "string"},
+     {"name": "atime", "type": ["long", "null"]}
+ ]
+}
