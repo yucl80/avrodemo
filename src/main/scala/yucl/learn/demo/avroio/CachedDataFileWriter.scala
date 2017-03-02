@@ -1,5 +1,6 @@
 package yucl.learn.demo.avroio
 
+import java.util
 import java.util.UUID
 
 import org.apache.avro.Schema
@@ -9,6 +10,8 @@ import org.apache.avro.mapred.FsInput
 import org.apache.avro.specific.SpecificDatumWriter
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FSDataOutputStream, Path}
+import org.apache.hadoop.hdfs.DFSOutputStream
+import org.apache.hadoop.hdfs.client.HdfsDataOutputStream.SyncFlag
 import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.concurrent.TrieMap
@@ -57,9 +60,8 @@ object CachedDataFileWriter {
           fsDataOutputStream = fileSystem.create(filePath, false)
           dfw = dataFileWriter.create(schema, fsDataOutputStream)
         }
-
         dfw.setFlushOnEveryBlock(true)
-        dfw.setSyncInterval(2048)
+        dfw.setSyncInterval(1048576)
         cacheWriterEntity = new CachedWriterEntity(dfw, fsDataOutputStream)
         fileCache.put(fileName, cacheWriterEntity)
       }
@@ -70,7 +72,10 @@ object CachedDataFileWriter {
 
   def closeTimeoutFiles(): Unit = {
     for ((fileName, writer) <- fileCache) {
-      if (System.currentTimeMillis() - writer.lastWriteTime > 1000l) {
+      val fsDataOutputStream = writer.fsDataOutputStream.getWrappedStream()
+      val dFSOutputStream = fsDataOutputStream.asInstanceOf[DFSOutputStream]
+      dFSOutputStream.hsync(util.EnumSet.of(SyncFlag.UPDATE_LENGTH))
+      if (System.currentTimeMillis() - writer.lastWriteTime > 259200000l) {
         fileCache.remove(fileName)
         writer.dataFileWriter.close()
         writer.fsDataOutputStream.close()
@@ -82,10 +87,13 @@ object CachedDataFileWriter {
   def closeAllFiles(): Unit = {
     for ((fileName, writer) <- fileCache) {
       try {
-        fileCache.remove(fileName)
-        writer.fsDataOutputStream.close()
-        writer.dataFileWriter.close()
+        //fileCache.remove(fileName)
+        // writer.dataFileWriter.close()
+        // writer.fsDataOutputStream.close()
+
         logger.info(fileName + " remove from writer cache")
+      } catch {
+        case e: Exception => logger.error(e.getMessage, e)
       }
     }
   }
@@ -94,8 +102,10 @@ object CachedDataFileWriter {
     override def run() = {
       while (true) {
         try {
-          Thread.sleep(30000l)
+          Thread.sleep(6000000l)
           closeTimeoutFiles()
+        } catch {
+          case e: Exception => logger.error(e.getMessage, e)
         }
       }
     }
