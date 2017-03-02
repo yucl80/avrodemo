@@ -2,7 +2,9 @@ package yucl.learn.demo.avroio
 
 import java.util
 import java.util.UUID
+import java.util.concurrent._
 
+import com.google.common.util.concurrent.ThreadFactoryBuilder
 import org.apache.avro.Schema
 import org.apache.avro.file.{CodecFactory, DataFileWriter}
 import org.apache.avro.generic._
@@ -20,11 +22,11 @@ object CachedDataFileWriter {
   val logger: Logger = LoggerFactory.getLogger(CachedDataFileWriter.getClass)
   val fileName: String = UUID.randomUUID().toString
   private val fileCache: TrieMap[String, CachedWriterEntity] = new TrieMap[String, CachedWriterEntity]
-  // val pool: ExecutorService = Executors.newFixedThreadPool(1)
+  val scheduledExecutorService: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor(new ThreadFactoryBuilder().setDaemon(true).build())
   var schema: Schema = null
 
   def write(record: GenericRecord, partitionKeys: List[String], basePath: String, schema: Schema, configuration: Configuration): Unit = {
-    val fileFullName = buildFilePath(record, partitionKeys, basePath) + "/" + fileName + "-" + Thread.currentThread().getId + ".avro"
+    val fileFullName = buildFilePath(record, partitionKeys, basePath) + "/" + fileName + ".avro"
     val cacheWriterEntity = getDataFileWriter(fileFullName, schema, configuration)
     val dataFileWriter = cacheWriterEntity.dataFileWriter
     dataFileWriter.append(record)
@@ -36,8 +38,7 @@ object CachedDataFileWriter {
   def buildFilePath(record: GenericRecord, partitionKeys: List[String], basePath: String): String = {
     var filePath: String = ""
     partitionKeys.foreach(pk =>
-      filePath = filePath + "/" + pk + "=" + record.get(pk)
-    )
+      filePath = filePath + "/" + pk + "=" + record.get(pk))
     basePath + filePath
   }
 
@@ -61,7 +62,7 @@ object CachedDataFileWriter {
           dfw = dataFileWriter.create(schema, fsDataOutputStream)
         }
         dfw.setFlushOnEveryBlock(true)
-        dfw.setSyncInterval(1048576)
+        dfw.setSyncInterval(1024)
         cacheWriterEntity = new CachedWriterEntity(dfw, fsDataOutputStream)
         fileCache.put(fileName, cacheWriterEntity)
       }
@@ -69,53 +70,45 @@ object CachedDataFileWriter {
     }
   }
 
+  def syncDFSOutputStream(): Unit = {
+    for ((fileName, writer) <- fileCache) {
+      try {
+        val fsDataOutputStream = writer.fsDataOutputStream.getWrappedStream()
+        val dFSOutputStream = fsDataOutputStream.asInstanceOf[DFSOutputStream]
+        dFSOutputStream.hsync(util.EnumSet.of(SyncFlag.UPDATE_LENGTH))
+        logger.debug(fileName + " remove from writer cache")
+      } catch {
+        case e: Exception => logger.error(fileName, e)
+      }
+    }
+  }
+
+  scheduledExecutorService.scheduleAtFixedRate(new Runnable {
+    override def run() = {
+      syncDFSOutputStream()
+    }
+  }, 1, 1, TimeUnit.MINUTES)
 
   def closeTimeoutFiles(): Unit = {
     for ((fileName, writer) <- fileCache) {
-      val fsDataOutputStream = writer.fsDataOutputStream.getWrappedStream()
-      val dFSOutputStream = fsDataOutputStream.asInstanceOf[DFSOutputStream]
-      dFSOutputStream.hsync(util.EnumSet.of(SyncFlag.UPDATE_LENGTH))
-      if (System.currentTimeMillis() - writer.lastWriteTime > 259200000l) {
-        fileCache.remove(fileName)
-        writer.dataFileWriter.close()
-        writer.fsDataOutputStream.close()
-        logger.info(fileName + " remove from writer cache")
-      }
-    }
-  }
-
-  def closeAllFiles(): Unit = {
-    for ((fileName, writer) <- fileCache) {
-      try {
-        //fileCache.remove(fileName)
-        // writer.dataFileWriter.close()
-        // writer.fsDataOutputStream.close()
-
-        logger.info(fileName + " remove from writer cache")
-      } catch {
-        case e: Exception => logger.error(e.getMessage, e)
-      }
-    }
-  }
-
-  val thread = new Thread(new Runnable {
-    override def run() = {
-      while (true) {
+      if (System.currentTimeMillis() - writer.lastWriteTime > 5 * 24 * 60 * 60 * 1000) {
         try {
-          Thread.sleep(6000000l)
-          closeTimeoutFiles()
+          fileCache.remove(fileName)
+          writer.dataFileWriter.close()
+          writer.fsDataOutputStream.close()
+          logger.info(fileName + " remove from writer cache")
         } catch {
-          case e: Exception => logger.error(e.getMessage, e)
+          case e: Exception => logger.error(fileName, e)
         }
       }
     }
-  })
-  thread.setDaemon(true)
-  thread.start()
+  }
 
-  sys.addShutdownHook(
-    closeAllFiles()
-  )
+  scheduledExecutorService.scheduleWithFixedDelay(new Runnable {
+    override def run() = {
+      closeTimeoutFiles()
+    }
+  }, 5, 5, TimeUnit.DAYS)
 
 
 }

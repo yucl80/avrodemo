@@ -10,14 +10,16 @@ import org.apache.spark.streaming.{Seconds, StreamingContext}
 import org.apache.spark.{SparkConf, SparkContext}
 import org.slf4j.{Logger, LoggerFactory}
 
-import scala.util.parsing.json.JSON
+import scala.util.parsing.json.JSON.parseFull
 
 object AccLogSaver {
   val logger: Logger = LoggerFactory.getLogger(AccLogSaver.getClass)
 
   def main(args: Array[String]) {
     //val List(appName,kafkaZkUrl,topic,kafkaConsumerThreadCount,kafkaStreamCount) = args.toList
-    val List(appName, kafkaZkUrl, topic, kafkaConsumerThreadCount, kafkaStreamCount) = List("AccLogSaver", "192.168.21.12,192.168.21.13,192.168.21.14", "parsed-acclog", "6", "1")
+    val List(appName, kafkaZkUrl, topic, kafkaConsumerThreadCount, kafkaStreamCount, outputPath) = List("AccLogSaver",
+      "192.168.21.12,192.168.21.13,192.168.21.14", "parsed-acclog", "6", "1", "hdfs://192.168.21.25:9000/tmp/acclog")
+    val partitionKeys = List("year", "month", "system")
     val sparkConf = new SparkConf()
       .setAppName(appName)
       .setMaster("local[8]")
@@ -31,7 +33,7 @@ object AccLogSaver {
     val unifiedStream = streamingContext.union(kafkaStreams)
     val accLogs = unifiedStream
       .map(_._2)
-      .map(JSON.parseFull(_))
+      .map(parseFull(_))
       .map(_.getOrElse(Map()))
       .map(_.asInstanceOf[Map[String, Any]])
       .filter(_.nonEmpty)
@@ -95,14 +97,11 @@ object AccLogSaver {
             record.put(fields(20), log.getOrElse(fields(20), "").asInstanceOf[String])
             //record.put("uuid", UUID.randomUUID.toString)
             logger.debug(record.toString)
-            val partitionKeys = List("year", "month", "system")
-            val basePath: String = "/tmp/acclog18"
-            CachedDataFileWriter.write(record, partitionKeys, basePath, schema, conf)
+            CachedDataFileWriter.write(record, partitionKeys, outputPath, schema, conf)
           } catch {
             case e: Exception => logger.error(log.toString(), e)
           }
         })
-        //flash file
       })
     })
 
