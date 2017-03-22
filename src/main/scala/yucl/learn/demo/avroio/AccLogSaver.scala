@@ -23,6 +23,8 @@ object AccLogSaver {
     val sparkConf = new SparkConf()
       .setAppName(appName)
       .setMaster("local[8]")
+      .set("spark.streaming.stopGracefullyOnShutdown", "true")
+
     val WINDOW_SIZE = Seconds(10)
     val sparkContext = new SparkContext(sparkConf)
     val streamingContext = new StreamingContext(sparkContext, WINDOW_SIZE)
